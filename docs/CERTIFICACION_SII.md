@@ -20,7 +20,7 @@ El Servicio de Impuestos Internos (SII) estructura la certificación de Facturac
 
 ```mermaid
 flowchart TD
-    C1["Hito C1: Factura Electrónica (DTE 33)<br/><b>[EN PROCESO / DETENIDO EN CONFIG]</b>"] --> C2["Hito C2: Notas de Crédito (61) y Débito (56)<br/>Soporte &lt;Referencia&gt;"]
+    C1["Hito C1: Factura Electrónica (DTE 33)<br/><b>[RESUELTO EN CÓDIGO / PENDIENTE ENVÍO REAL]</b>"] --> C2["Hito C2: Notas de Crédito (61) y Débito (56)<br/>Soporte &lt;Referencia&gt;"]
     C2 --> C3["Hito C3: Muestras Impresas (PDF con PDF417)"]
     C3 --> C4["Hito C4: Intercambio entre Contribuyentes<br/>(RespuestaDTE y ReciboItem)"]
     C4 --> C5["Hito C5: Certificación y Paso a Producción"]
@@ -37,10 +37,13 @@ flowchart TD
 
 ### Hito C1: Emisión y Envío de Facturas Electrónicas (DTE 33)
 
-- **Estado:** En proceso (código core implementado, detenido en configuración de emisor).
-- **Problema Detectado:** Rechazo de carátula `EnvioDTE` al enviar con resolución real en ambiente de certificación.
-- **Solución Aplicada:** Documentación explícita en OpenAPI/Swagger para configurar `nroResol = 0` y `fchResol = "2014-08-22"` en ambiente de certificación (`PUT /tenants/issuer`).
-- **Criterio de Éxito:** Envío exitoso del set de facturas de prueba al SII con `trackId` retornado y estado `EPR` (Envío Procesado) sin rechazos de carátula.
+- **Estado:** Resuelto en código; pendiente el envío real ante el SII en certificación (Fase 0).
+- **Problema Detectado:** Rechazo de carátula `EnvioDTE` al enviar con resolución real en ambiente de certificación. La solución estaba solo documentada en el DTO de `PUT /tenants/issuer`, pero nada en el código la aplicaba: si el emisor configuraba su resolución real, la carátula la usaba tal cual y el SII la rechazaba.
+- **Solución Aplicada (Fase 0):** La resolución de la carátula ahora se resuelve en código según el ambiente (`src/domain/sii/values/certification-caratula.ts`, `resolveCaratulaResolucion`):
+  - **CERTIFICATION:** la carátula usa siempre `nroResol = 0` y `fchResol = "2014-08-22"` (valores oficiales del set de pruebas), aunque el emisor tenga una resolución real configurada, y ya no es obligatorio configurar resolución para emitir en certificación.
+  - **PRODUCTION:** la carátula usa la resolución configurada del emisor vía `PUT /tenants/issuer`; si no está configurada, la emisión falla antes de consumir folio.
+  - Se aplica en `IssueInvoiceUseCase` y en `CreateEnvioDteUseCase` (punto donde se arma la carátula). El ambiente se toma del payload (`environment`) o de la variable `SII_ENVIRONMENT` (ver `.env.example`); por defecto es `CERTIFICATION`.
+- **Criterio de Éxito:** Envío exitoso del set de facturas de prueba al SII con `trackId` retornado y estado `EPR` (Envío Procesado) sin rechazos de carátula. **Aún pendiente:** requiere certificado .p12 y CAF/folios de prueba de desi y MongoDB (ver "Fase 0" en el PR). El flujo local completo (tenant de prueba → DTE 33 → firma XMLDSig + TED → validación XSD oficial → PDF) ya está verificado por tests E2E con gateway SII mockeado, sin envíos reales.
 
 ---
 

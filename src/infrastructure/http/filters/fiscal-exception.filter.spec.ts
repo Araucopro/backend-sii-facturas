@@ -28,7 +28,7 @@ describe('FiscalExceptionFilter', () => {
     statusMock = vi.fn().mockReturnValue({ json: jsonMock });
 
     responseMock = {
-      status: statusMock
+      status: statusMock as unknown as Response['status']
     };
 
     requestMock = {

@@ -9,6 +9,8 @@ import { Rut } from '../../domain/shared/rut.vo.js';
 import { NoActiveCertificateError } from '../../domain/certificate/errors/certificate-domain.error.js';
 import { TenantMismatchError } from '../../domain/folio/errors/folio-domain.error.js';
 import { FiscalValidationError } from '../../domain/dte/errors/fiscal-domain.error.js';
+import { SiiEnvironment } from '../../domain/sii/values/sii-domain.types.js';
+import { resolveCaratulaResolucion } from '../../domain/sii/values/certification-caratula.js';
 
 export interface CreateEnvioDteDto {
   tenantId: string;
@@ -17,6 +19,7 @@ export interface CreateEnvioDteDto {
   rutReceptor?: string;
   fchResol: string;
   nroResol: number;
+  environment?: SiiEnvironment;
   validateXsd?: boolean;
 }
 
@@ -68,6 +71,16 @@ export class CreateEnvioDteUseCase {
 
     const signedDteXmls = dto.invoices.map((inv) => inv.signedDteXml!);
 
+    // Hito C1: si se conoce el ambiente, la carátula usa los valores de
+    // resolución que corresponden a ese ambiente. En certificación el SII
+    // exige nroResol=0 y fchResol="2014-08-22" aunque el emisor tenga una
+    // resolución real configurada; sin ambiente, se respetan los valores
+    // recibidos (compatibilidad con llamadores existentes).
+    const { fchResol, nroResol } =
+      dto.environment !== undefined
+        ? resolveCaratulaResolucion(dto.environment, dto.invoices[0].emisor)
+        : { fchResol: dto.fchResol, nroResol: dto.nroResol };
+
     const envioDteXml = EnvioDteBuilder.buildAndSign(
       signedDteXmls,
       certificate,
@@ -75,8 +88,8 @@ export class CreateEnvioDteUseCase {
         rutEmisor,
         rutEnvia,
         rutReceptor,
-        fchResol: dto.fchResol,
-        nroResol: dto.nroResol,
+        fchResol,
+        nroResol,
         tipoDte: dto.invoices[0].tipoDte.code
       }
     );
