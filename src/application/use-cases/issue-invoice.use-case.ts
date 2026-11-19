@@ -14,6 +14,7 @@ import { SignDteUseCase } from './sign-dte.use-case.js';
 import { CreateEnvioDteUseCase } from './create-envio-dte.use-case.js';
 import { SubmitEnvioDteUseCase } from './submit-envio-dte.use-case.js';
 import { SiiEnvironment } from '../../domain/sii/values/sii-domain.types.js';
+import { resolveCaratulaResolucion } from '../../domain/sii/values/certification-caratula.js';
 import { NoActiveCertificateError } from '../../domain/certificate/errors/certificate-domain.error.js';
 import { FiscalValidationError } from '../../domain/dte/errors/fiscal-domain.error.js';
 import { SiiConnectionError } from '../../domain/sii/errors/sii-domain.error.js';
@@ -57,15 +58,17 @@ export class IssueInvoiceUseCase {
       );
     }
 
-    const fchResol = dto.emisor.fchResol;
-    const nroResol = dto.emisor.nroResol;
-    if (fchResol === undefined || nroResol === undefined) {
-      throw new FiscalValidationError(
-        'El emisor debe tener configurados fchResol y nroResol (resolución de autorización de facturación electrónica) antes de emitir. Configúrelos vía PUT /tenants/issuer.'
-      );
-    }
-
     const env = dto.environment ?? 'CERTIFICATION';
+
+    // Hito C1: la carátula del EnvioDTE usa los valores de resolución según
+    // el ambiente. En certificación el SII exige nroResol=0 y
+    // fchResol="2014-08-22" aunque el emisor tenga una resolución real
+    // configurada; en producción se usa la resolución del emisor y es
+    // obligatorio tenerla configurada.
+    const { fchResol, nroResol } = resolveCaratulaResolucion(
+      env,
+      dto.emisor
+    );
 
     // 1. Control de idempotencia
     if (dto.idempotencyKey && dto.idempotencyKey.trim().length > 0) {
@@ -180,6 +183,7 @@ export class IssueInvoiceUseCase {
       rutEnvia: rutSender.toCanonical(),
       fchResol,
       nroResol,
+      environment: env,
       validateXsd: dto.validateXsd
     });
 

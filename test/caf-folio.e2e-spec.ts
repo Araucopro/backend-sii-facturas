@@ -173,7 +173,10 @@ describe('CAFs y emisión de DTE (E2E con MongoDB)', () => {
 
   const server = () => app.getHttpServer();
 
-  const configureIssuer = (tenantId: string) =>
+  const configureIssuer = (
+    tenantId: string,
+    extra: Record<string, unknown> = {}
+  ) =>
     request(server())
       .put('/tenants/issuer')
       .set('x-tenant-id', tenantId)
@@ -186,7 +189,8 @@ describe('CAFs y emisión de DTE (E2E con MongoDB)', () => {
         comuna: 'Providencia',
         ciudad: 'Santiago',
         correo: `facturacion-${tenantId}@example.cl`,
-        telefono: '+56911223344'
+        telefono: '+56911223344',
+        ...extra
       });
 
   const uploadCertificate = (tenantId: string) =>
@@ -225,6 +229,34 @@ describe('CAFs y emisión de DTE (E2E con MongoDB)', () => {
       .set('idempotency-key', idempotencyKey)
       .send(invoiceBody)
       .expect(expectedStatus);
+
+  // Emisión con validación XSD oficial activada (DTE + EnvioDTE). El gateway
+  // SII sigue mockeado: no hay envío real al SII.
+  const issueInvoiceValidated = (tenantId: string, idempotencyKey: string) =>
+    request(server())
+      .post('/invoices')
+      .set('x-tenant-id', tenantId)
+      .set('idempotency-key', idempotencyKey)
+      .send({ ...invoiceBody, validateXsd: true })
+      .expect(201);
+
+  const getInvoiceEnvio = (tenantId: string, folio: number) =>
+    request(server())
+      .get(`/invoices/${folio}/envio`)
+      .set('x-tenant-id', tenantId)
+      .expect(200);
+
+  const getInvoiceXml = (tenantId: string, folio: number) =>
+    request(server())
+      .get(`/invoices/${folio}/xml`)
+      .set('x-tenant-id', tenantId)
+      .expect(200);
+
+  const getInvoicePdf = (tenantId: string, folio: number) =>
+    request(server())
+      .get(`/invoices/${folio}/pdf`)
+      .set('x-tenant-id', tenantId)
+      .expect(200);
 
   const getFolioStatus = (tenantId: string) =>
     request(server())
@@ -338,5 +370,52 @@ describe('CAFs y emisión de DTE (E2E con MongoDB)', () => {
     const response = await issueInvoice(tenantId, 'e2e-sin-caf', 412);
     expect(response.status).toBe(412);
     expect(response.body.message).toContain('No existe un CAF activo');
+  });
+
+  it('Fase 0 / hito C1: en CERTIFICATION emite sin resolución configurada y la carátula usa nroResol=0 y fchResol=2014-08-22', async () => {
+    const tenantId = nextTenantId('caratula-cert');
+    await setupIssuerAndCertificate(tenantId);
+    await importCaf(tenantId, createCafXml(1, 10)).expect(201);
+
+    const emission = await issueInvoiceValidated(tenantId, 'e2e-caratula-1');
+    expect(emission.status).toBe(201);
+    expect(emission.body.folio).toBe(1);
+    expect(emission.body.trackId).toBe('TRACK-E2E');
+    expect(emission.body.estado).toBe('SUBMITTED');
+
+    // El sobre EnvioDTE firmado lleva la carátula oficial de certificación
+    const envio = await getInvoiceEnvio(tenantId, 1);
+    expect(envio.text).toContain('<NroResol>0</NroResol>');
+    expect(envio.text).toContain('<FchResol>2014-08-22</FchResol>');
+
+    // El DTE firmado y el PDF con timbre quedan disponibles para el cliente
+    const xml = await getInvoiceXml(tenantId, 1);
+    expect(xml.text).toContain('<DTE');
+    expect(xml.text).toContain('<TED');
+
+    const pdf = await getInvoicePdf(tenantId, 1);
+    expect(pdf.headers['content-type']).toContain('application/pdf');
+    expect(Buffer.isBuffer(pdf.body)).toBe(true);
+    expect(pdf.body.length).toBeGreaterThan(0);
+  });
+
+  it('Fase 0 / hito C1: en CERTIFICATION la carátula ignora la resolución real configurada por el emisor', async () => {
+    const tenantId = nextTenantId('caratula-real');
+    await configureIssuer(tenantId, {
+      fchResol: '2026-09-01',
+      nroResol: 80
+    }).expect(200);
+    await uploadCertificate(tenantId).expect(201);
+    await importCaf(tenantId, createCafXml(1, 10)).expect(201);
+
+    const emission = await issueInvoiceValidated(tenantId, 'e2e-caratula-2');
+    expect(emission.status).toBe(201);
+    expect(emission.body.folio).toBe(1);
+
+    const envio = await getInvoiceEnvio(tenantId, 1);
+    expect(envio.text).toContain('<NroResol>0</NroResol>');
+    expect(envio.text).toContain('<FchResol>2014-08-22</FchResol>');
+    expect(envio.text).not.toContain('<NroResol>80</NroResol>');
+    expect(envio.text).not.toContain('<FchResol>2026-09-01</FchResol>');
   });
 });

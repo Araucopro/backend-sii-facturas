@@ -16,7 +16,11 @@ import { Money } from '../../domain/shared/money.vo.js';
 import { Caf } from '../../domain/folio/entities/caf.entity.js';
 import { FolioRepository } from '../../domain/folio/ports/folio.repository.js';
 import { CertificateRepository } from '../../domain/certificate/ports/certificate.repository.js';
-import { InvoiceRepository } from '../../domain/dte/ports/invoice.repository.js';
+import {
+  InvoiceRepository,
+  FindInvoicesFilters,
+  PaginatedResult
+} from '../../domain/dte/ports/invoice.repository.js';
 import { StampInvoiceUseCase } from './stamp-invoice.use-case.js';
 import { BuildDteXmlUseCase } from './build-dte-xml.use-case.js';
 import { SignDteUseCase } from './sign-dte.use-case.js';
@@ -65,6 +69,18 @@ class InMemoryInvoiceRepository implements InvoiceRepository {
     idempotencyKey: string
   ): Promise<Invoice | null> {
     return this.invoicesByIdemp.get(`${tenantId}:${idempotencyKey}`) ?? null;
+  }
+
+  public async findMany(
+    filters: FindInvoicesFilters
+  ): Promise<PaginatedResult<Invoice>> {
+    const items = [...this.invoicesByFolio.values()].filter(
+      (invoice) => invoice.tenantId === filters.tenantId
+    );
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 20;
+    const start = (page - 1) * limit;
+    return { items: items.slice(start, start + limit), total: items.length };
   }
 }
 
@@ -236,7 +252,31 @@ describe('M6 End-to-End: IssueInvoiceUseCase', () => {
     expect(mockSubmitEnvioUseCase.execute).toHaveBeenCalled();
     expect(result.invoice.trackId).toBe('TRACK-SII-998877');
 
-    // La carátula debe enviar la resolución configurada del emisor y el RUT del certificado
+    // La carátula en CERTIFICATION (ambiente por defecto) usa siempre los
+    // valores oficiales de certificación, no la resolución configurada
+    expect(mockCreateEnvioUseCase.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fchResol: '2014-08-22',
+        nroResol: 0,
+        rutEnvia: '76123456-0'
+      })
+    );
+  });
+
+  it('en PRODUCTION la carátula usa la resolución configurada del emisor', async () => {
+    const dto: IssueInvoiceDto = {
+      tenantId,
+      fechaEmision: new Date('2026-09-04'),
+      emisor: validIssuer,
+      receptor: validReceiver,
+      items: createValidItems(),
+      idempotencyKey: 'idemp-prod-001',
+      environment: 'PRODUCTION'
+    };
+
+    const result = await issueInvoiceUseCase.execute(dto);
+
+    expect(result.estado).toBe(InvoiceStatus.SUBMITTED);
     expect(mockCreateEnvioUseCase.execute).toHaveBeenCalledWith(
       expect.objectContaining({
         fchResol: '2026-09-01',
@@ -246,7 +286,7 @@ describe('M6 End-to-End: IssueInvoiceUseCase', () => {
     );
   });
 
-  it('rechaza antes de consumir folio si el emisor no tiene resolución de autorización configurada', async () => {
+  it('en CERTIFICATION emite aunque el emisor no tenga resolución configurada, con la carátula oficial', async () => {
     const emisorSinResolucion = Issuer.create({
       rut: Rut.of('76123456-0'),
       razonSocial: 'Empresa Emisora SpA',
@@ -262,7 +302,41 @@ describe('M6 End-to-End: IssueInvoiceUseCase', () => {
       emisor: emisorSinResolucion,
       receptor: validReceiver,
       items: createValidItems(),
-      idempotencyKey: 'idemp-sin-resolucion'
+      idempotencyKey: 'idemp-cert-sin-resolucion',
+      environment: 'CERTIFICATION'
+    };
+
+    const result = await issueInvoiceUseCase.execute(dto);
+
+    expect(result.estado).toBe(InvoiceStatus.SUBMITTED);
+    expect(mockFolioRepo.allocateNextFolio).toHaveBeenCalled();
+    expect(mockCreateEnvioUseCase.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fchResol: '2014-08-22',
+        nroResol: 0,
+        rutEnvia: '76123456-0'
+      })
+    );
+  });
+
+  it('rechaza antes de consumir folio si en PRODUCTION el emisor no tiene resolución de autorización configurada', async () => {
+    const emisorSinResolucion = Issuer.create({
+      rut: Rut.of('76123456-0'),
+      razonSocial: 'Empresa Emisora SpA',
+      giro: 'Servicios de TI',
+      actividadEconomica: 620100,
+      direccion: 'Av. Andrés Bello 2777',
+      comuna: 'Las Condes'
+    });
+
+    const dto: IssueInvoiceDto = {
+      tenantId,
+      fechaEmision: new Date('2026-09-04'),
+      emisor: emisorSinResolucion,
+      receptor: validReceiver,
+      items: createValidItems(),
+      idempotencyKey: 'idemp-sin-resolucion',
+      environment: 'PRODUCTION'
     };
 
     await expect(issueInvoiceUseCase.execute(dto)).rejects.toThrow(
